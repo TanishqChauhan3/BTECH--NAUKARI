@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: careerbridge_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       careerbridge
+      POSTGRES_USER:     careerbridge
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careerbridge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: careerbridge_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ──────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: careerbridge_api
+    restart: unless-stopped
+    depends_on:
+      db:    { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+asyncpg://careerbridge:secret@db:5432/careerbridge
+      REDIS_URL:    redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Scraper / Scheduler ──────────────────────────────────────────
+  scraper:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    container_name: careerbridge_scraper
+    restart: unless-stopped
+    depends_on:
+      db:    { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql+asyncpg://careerbridge:secret@db:5432/careerbridge
+      REDIS_URL:    redis://redis:6379/0
+    volumes:
+      - ./scraper:/app
+    command: python scheduler.py
+
+  # ── React Frontend (dev) ─────────────────────────────────────────
+  frontend:
+    image: node:20-alpine
+    container_name: careerbridge_frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host"
+    environment:
+      VITE_API_URL: http://localhost:8000/api/v1
+
+volumes:
+  pgdata:
